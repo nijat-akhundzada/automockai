@@ -1,0 +1,12 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:11434:11434" # expose Ollama API
+    volumes:
+      - ollama_data:/root/.ollama # persist pulled models
+
+volumes:
+  ollama_data:

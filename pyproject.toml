@@ -1,0 +1,24 @@
+[project]
+name = "automockai"
+version = "0.1.0"
+description = "Schema-aware AI-powered mock data generator"
+readme = "README.md"
+authors = [
+    { name = "Nicat-Axundzada", email = "nicataxundzada@gmail.com" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "sqlalchemy",
+    "psycopg[binary]",
+    "faker",
+    "openai",
+    "typer",
+    "ollama>=0.5.3",
+]
+
+[project.scripts]
+automockai = "automockai.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.8.15,<0.9.0"]
+build-backend = "uv_build"
