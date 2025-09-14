@@ -1,6 +1,13 @@
 import os
 import re
-from typing import Dict, Any, List, Optional
+import json
+import random
+from typing import Dict, Any, List, Optional, Tuple, Set
+from sqlalchemy.engine import Engine
+from sqlalchemy import text
+import logging
+
+logger = logging.getLogger(__name__)
 
 try:
     import ollama
@@ -8,9 +15,9 @@ except Exception:
     ollama = None
 
 try:
-    from automockai.fallback import generate_fake_rows
+    from automockai.fallback import FallbackGenerator
 except Exception:
-    generate_fake_rows = None
+    FallbackGenerator = None
 
 FENCE_RE = re.compile(r"```[a-zA-Z0-9]*\n?|```", re.MULTILINE)
 # regex for ISO8601 timestamp inside single quotes
@@ -27,8 +34,263 @@ CONCAT_QQ_RE = re.compile(r"('(?:[^']|'')*')\s*\|\|\s*('(?:[^']|'')*')")
 CONCAT_QI_RE = re.compile(
     r"('(?:[^']|'')*')\s*\|\|\s*([A-Za-z][A-Za-z0-9_]*(?:''[A-Za-z0-9_]+)?)")
 
+
+class DataGenerator:
+    """
+    Data Generator Agent - Generates rows based on schema.
+    - If column is a foreign key → reference already inserted rows
+    - If field is semantic (name, email, salary, date) → call AI model
+    - Otherwise → fallback to Faker
+    - Must enforce constraints (uniqueness, business rules)
+    """
+    
+    def __init__(self, engine: Engine, schema_info: Dict[str, Any]):
+        self.engine = engine
+        self.schema_info = schema_info
+        self.existing_data_cache = {}
+        self.generated_values_cache = {}
+        self.fallback_generator = FallbackGenerator() if FallbackGenerator else None
+        
+    def get_existing_foreign_key_values(self, table_name: str, column_name: str) -> List[Any]:
+        """Get existing values from a foreign key referenced table."""
+        cache_key = f"{table_name}.{column_name}"
+        if cache_key in self.existing_data_cache:
+            return self.existing_data_cache[cache_key]
+        
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(text(f'SELECT DISTINCT "{column_name}" FROM "{table_name}" WHERE "{column_name}" IS NOT NULL'))
+                values = [row[0] for row in result.fetchall()]
+                self.existing_data_cache[cache_key] = values
+                return values
+        except Exception as e:
+            logger.warning(f"Failed to get existing FK values for {table_name}.{column_name}: {e}")
+            return []
+    
+    def generate_foreign_key_value(self, fk_info: Dict[str, Any]) -> Optional[Any]:
+        """Generate a valid foreign key value by selecting from referenced table."""
+        referred_table = fk_info["referred_table"]
+        referred_column = fk_info["referred_columns"][0] if fk_info["referred_columns"] else "id"
+        
+        existing_values = self.get_existing_foreign_key_values(referred_table, referred_column)
+        if existing_values:
+            return random.choice(existing_values)
+        return None
+    
+    def check_unique_constraint(self, table_name: str, column_name: str, value: Any) -> bool:
+        """Check if a value violates unique constraints."""
+        cache_key = f"{table_name}.{column_name}.unique"
+        if cache_key not in self.existing_data_cache:
+            try:
+                with self.engine.connect() as conn:
+                    result = conn.execute(text(f'SELECT DISTINCT "{column_name}" FROM "{table_name}"'))
+                    existing_values = {row[0] for row in result.fetchall()}
+                    self.existing_data_cache[cache_key] = existing_values
+            except Exception:
+                self.existing_data_cache[cache_key] = set()
+        
+        return value not in self.existing_data_cache[cache_key]
+    
+    def generate_semantic_value(self, column_info: Dict[str, Any], semantic_type: str, 
+                              constraints: Dict[str, Any] = None) -> Any:
+        """Generate semantically appropriate values using AI or fallback."""
+        if ollama is None:
+            return self._fallback_semantic_value(column_info, semantic_type, constraints)
+        
+        try:
+            prompt = self._build_semantic_prompt(column_info, semantic_type, constraints)
+            client = ollama.Client()
+            resp = client.chat(
+                model="mistral",
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.7},
+            )
+            
+            raw_response = resp["message"]["content"].strip()
+            return self._parse_semantic_response(raw_response, column_info["type"])
+            
+        except Exception as e:
+            logger.warning(f"AI generation failed for {semantic_type}: {e}")
+            return self._fallback_semantic_value(column_info, semantic_type, constraints)
+    
+    def _build_semantic_prompt(self, column_info: Dict[str, Any], semantic_type: str, 
+                              constraints: Dict[str, Any] = None) -> str:
+        """Build AI prompt for semantic data generation."""
+        column_name = column_info["name"]
+        column_type = column_info["type"]
+        
+        base_prompt = f"""Generate a realistic {semantic_type} value for database column "{column_name}" of type {column_type}.
+
+Requirements:
+- Return ONLY the raw value, no quotes or formatting
+- Value must be appropriate for {semantic_type} type
+- Must fit SQL type {column_type}"""
+
+        if constraints:
+            if "length" in constraints:
+                base_prompt += f"\n- Maximum length: {constraints['length']} characters"
+            if "check_constraints" in constraints:
+                base_prompt += f"\n- Must satisfy: {constraints['check_constraints']}"
+        
+        # Add specific guidance based on semantic type
+        if semantic_type == "email":
+            base_prompt += "\n- Must be valid email format (user@domain.com)"
+        elif semantic_type == "phone":
+            base_prompt += "\n- Must be valid phone number format"
+        elif semantic_type == "money":
+            base_prompt += "\n- Must be positive decimal number"
+        elif semantic_type == "datetime":
+            base_prompt += "\n- Must be valid ISO datetime format (YYYY-MM-DD HH:MM:SS)"
+        elif semantic_type == "name":
+            base_prompt += "\n- Must be realistic person/company/product name"
+        elif semantic_type == "address":
+            base_prompt += "\n- Must be realistic address component"
+        elif semantic_type == "url":
+            base_prompt += "\n- Must be valid URL format (https://example.com)"
+        
+        return base_prompt
+    
+    def _parse_semantic_response(self, response: str, column_type: str) -> Any:
+        """Parse AI response into appropriate Python type."""
+        response = response.strip().strip('"\'')
+        
+        column_type_lower = column_type.lower()
+        
+        if 'int' in column_type_lower:
+            try:
+                return int(float(response))
+            except ValueError:
+                return 0
+        elif 'float' in column_type_lower or 'decimal' in column_type_lower or 'numeric' in column_type_lower:
+            try:
+                return float(response)
+            except ValueError:
+                return 0.0
+        elif 'bool' in column_type_lower:
+            return response.lower() in ('true', '1', 'yes', 'on')
+        else:
+            return response
+    
+    def _fallback_semantic_value(self, column_info: Dict[str, Any], semantic_type: str, 
+                                constraints: Dict[str, Any] = None) -> Any:
+        """Generate semantic value using fallback generator."""
+        if self.fallback_generator:
+            return self.fallback_generator.generate_semantic_value(
+                column_info, semantic_type, constraints
+            )
+        
+        # Basic fallback without Faker
+        if semantic_type == "email":
+            return f"user{random.randint(1000, 9999)}@example.com"
+        elif semantic_type == "phone":
+            return f"+1-555-{random.randint(100, 999)}-{random.randint(1000, 9999)}"
+        elif semantic_type == "name":
+            names = ["John Doe", "Jane Smith", "Bob Johnson", "Alice Brown"]
+            return random.choice(names)
+        elif semantic_type == "money":
+            return round(random.uniform(10.0, 1000.0), 2)
+        elif semantic_type == "datetime":
+            return "2024-01-01 12:00:00"
+        elif semantic_type == "address":
+            return f"{random.randint(100, 999)} Main St"
+        elif semantic_type == "url":
+            return f"https://example{random.randint(1, 100)}.com"
+        else:
+            return f"sample_{semantic_type}_{random.randint(1, 1000)}"
+    
+    def generate_row_data(self, table_name: str, count: int = 1) -> List[Dict[str, Any]]:
+        """Generate row data for a table respecting all constraints."""
+        table_info = self.schema_info["tables"][table_name]
+        columns = table_info["columns"]
+        foreign_keys = {fk["constrained_columns"][0]: fk for fk in table_info["foreign_keys"]}
+        semantic_columns = table_info.get("semantic_columns", {})
+        unique_constraints = table_info.get("unique_constraints", [])
+        pk_columns = set(table_info["primary_key"]["constrained_columns"])
+        
+        generated_rows = []
+        
+        for _ in range(count):
+            row_data = {}
+            
+            for column in columns:
+                col_name = column["name"]
+                col_type = column["type"]
+                
+                # Skip auto-increment primary keys
+                if (col_name in pk_columns and 
+                    column.get("autoincrement", False) and 
+                    any(kw in col_type.lower() for kw in ['serial', 'identity', 'autoincrement'])):
+                    continue
+                
+                # Handle foreign keys
+                if col_name in foreign_keys:
+                    fk_value = self.generate_foreign_key_value(foreign_keys[col_name])
+                    if fk_value is not None:
+                        row_data[col_name] = fk_value
+                    elif not column["nullable"]:
+                        logger.warning(f"No FK values available for required column {col_name}")
+                        continue
+                
+                # Handle semantic columns
+                elif col_name in semantic_columns:
+                    semantic_type = semantic_columns[col_name]
+                    constraints = {
+                        "length": column.get("length"),
+                        "check_constraints": [cc["sqltext"] for cc in table_info.get("check_constraints", [])]
+                    }
+                    
+                    value = self.generate_semantic_value(column, semantic_type, constraints)
+                    
+                    # Ensure uniqueness if required
+                    if any(col_name in uc["column_names"] for uc in unique_constraints):
+                        attempts = 0
+                        while not self.check_unique_constraint(table_name, col_name, value) and attempts < 10:
+                            value = self.generate_semantic_value(column, semantic_type, constraints)
+                            attempts += 1
+                    
+                    row_data[col_name] = value
+                
+                # Handle regular columns with fallback
+                else:
+                    if self.fallback_generator:
+                        value = self.fallback_generator.generate_column_value(column)
+                    else:
+                        value = self._basic_fallback_value(column)
+                    
+                    # Ensure uniqueness if required
+                    if any(col_name in uc["column_names"] for uc in unique_constraints):
+                        attempts = 0
+                        while not self.check_unique_constraint(table_name, col_name, value) and attempts < 10:
+                            if self.fallback_generator:
+                                value = self.fallback_generator.generate_column_value(column)
+                            else:
+                                value = self._basic_fallback_value(column)
+                            attempts += 1
+                    
+                    row_data[col_name] = value
+            
+            generated_rows.append(row_data)
+        
+        return generated_rows
+    
+    def _basic_fallback_value(self, column: Dict[str, Any]) -> Any:
+        """Basic fallback value generation without external libraries."""
+        col_type = column["type"].lower()
+        
+        if 'int' in col_type or 'serial' in col_type:
+            return random.randint(1, 1000)
+        elif 'float' in col_type or 'decimal' in col_type or 'numeric' in col_type:
+            return round(random.uniform(1.0, 100.0), 2)
+        elif 'bool' in col_type:
+            return random.choice([True, False])
+        elif 'date' in col_type or 'time' in col_type:
+            return "2024-01-01 12:00:00"
+        else:
+            return f"sample_text_{random.randint(1, 1000)}"
+
+
 # ======================================================
-#                 PROMPT CONSTRUCTION
+#                 PROMPT CONSTRUCTION (Legacy)
 # ======================================================
 
 
