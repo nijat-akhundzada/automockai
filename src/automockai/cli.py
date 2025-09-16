@@ -13,6 +13,12 @@ from automockai.schema import SchemaAnalyzer, make_engine
 from automockai.generator import DataGenerator
 from automockai.inserter import DataInserter
 from automockai.model.evaluate import DataValidator
+from automockai.schema import SchemaAnalyzer, make_engine
+from automockai.generator import DataGenerator
+from automockai.inserter import DataInserter
+from automockai.model.evaluate import DataValidator
+from automockai.model.preprocessing import create_training_data
+from automockai.model.train import train_model
 
 app = typer.Typer(
     help="🚀 AutoMockAI – Schema-aware AI-powered mock data generator")
@@ -59,6 +65,7 @@ def generate(
     exclude: Optional[str] = typer.Option(None, "--exclude", "-e", help="Comma-separated glob patterns of tables to exclude"),
     skip_django: bool = typer.Option(True, help="Exclude default Django tables"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Generate data but do not insert into the database"),
+    use_local_model: bool = typer.Option(True, help="Use the local fine-tuned model for generation."),
     fallback_only: bool = typer.Option(False, "--fallback-only", help="Use only the fallback generator (Faker), skipping AI"),
     validate: bool = typer.Option(False, "--validate", help="Run validation checks on the generated data after insertion"),
     seed: Optional[int] = typer.Option(None, help="Seed for deterministic data generation in fallback mode"),
@@ -69,7 +76,7 @@ def generate(
     """
     logger.info("🚀 AutoMockAI is starting the data generation process...")
 
-    # --- 1. Schema Analyzer --- 
+    # --- 1. Schema Analyzer ---
     logger.info("Connecting to the database and analyzing schema...")
     try:
         engine = make_engine(dsn)
@@ -82,8 +89,8 @@ def generate(
 
     # --- 2. Table Filtering ---
     all_tables = list(schema_info["tables"].keys())
-    include_patterns = [p.strip() for p in include.split(',')] if include else []
-    exclude_patterns = [p.strip() for p in exclude.split(',')] if exclude else []
+    include_patterns = [p.strip() for p in include.split(',')]
+    exclude_patterns = [p.strip() for p in exclude.split(',')]
     
     selected_tables = _filter_tables(all_tables, include_patterns, exclude_patterns, skip_django)
     
@@ -96,6 +103,9 @@ def generate(
     # --- 3. Data Generator ---
     logger.info("Generating mock data...")
     data_generator = DataGenerator(engine, schema_info)
+    if not use_local_model:
+        data_generator.text_generator = None # Disable local model if not requested
+
     generated_data = {}
     
     insertion_order = schema_info.get("insertion_order", selected_tables)
@@ -168,6 +178,31 @@ def generate(
     
     logger.info("🎉 AutoMockAI process finished successfully!")
 
+@app.command()
+def preprocess(output_path: str = typer.Option("training_data.csv", help="Path to save the processed training data.")):
+    """
+    Downloads and preprocesses the training datasets.
+    """
+    logger.info("Starting data preprocessing...")
+    create_training_data(output_path)
+
+@app.command()
+def train(
+    training_data_path: str = typer.Option("training_data.csv", help="Path to the training data CSV file."),
+    epochs: int = typer.Option(3, help="Number of training epochs."),
+    batch_size: int = typer.Option(8, help="Training batch size."),
+    learning_rate: float = typer.Option(5e-5, help="Learning rate for the optimizer."),
+):
+    """
+    Trains the AI model on the preprocessed data.
+    """
+    logger.info("Starting model training...")
+    train_model(
+        training_data_path=training_data_path,
+        epochs=epochs,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+    )
 
 def main():
     app()
