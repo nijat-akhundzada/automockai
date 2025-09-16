@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 # --- Dataset URLs ---
 # Using a reliable mirror for Northwind
-NORTHWIND_URL = "https://github.com/lubran/northwind/archive/refs/heads/master.zip"
+NORTHWIND_URL = "http://bitnine.net/tutorial/import-northwind-dataset.zip"
 HR_DATASET_URL = "https://www.kaggle.com/datasets/rhuebner/human-resources-data-set/download?datasetVersionNumber=2"
 FINANCIAL_TRANSACTIONS_URL = "https://www.kaggle.com/datasets/garfield18/credit-card-transactions/download?datasetVersionNumber=1"
 
@@ -45,29 +45,26 @@ def process_northwind_dataset(data_path: str) -> List[Tuple[str, str, Any]]:
     """Processes the Northwind dataset into (field_name, type, value) triples."""
     triples = []
     
-    # Find the main directory inside the extracted zip
-    main_dir = ""
-    for item in os.listdir(data_path):
-        if os.path.isdir(os.path.join(data_path, item)) and 'northwind' in item.lower():
-            main_dir = os.path.join(data_path, item)
-            break
-            
-    if not main_dir:
-        logger.warning("Could not find the main Northwind directory.")
+    all_csv_files = []
+    for root, _, files in os.walk(data_path):
+        for file in files:
+            if file.endswith('.csv'):
+                all_csv_files.append(os.path.join(root, file))
+
+    if not all_csv_files:
+        logger.warning(f"No CSV files found in {data_path} for Northwind dataset.")
         return []
         
-    csv_files = [f for f in os.listdir(main_dir) if f.endswith('.csv')]
-    
-    for file_name in csv_files:
+    for file_path in all_csv_files:
         try:
-            df = pd.read_csv(os.path.join(main_dir, file_name))
+            df = pd.read_csv(file_path)
             for col in df.columns:
                 for value in df[col].dropna():
                     field_name = col.lower()
                     value_type = str(df[col].dtype)
                     triples.append((field_name, value_type, value))
         except Exception as e:
-            logger.warning(f"Could not process {file_name}: {e}")
+            logger.warning(f"Could not process {file_path}: {e}")
             
     return triples
 
@@ -132,7 +129,8 @@ def create_training_data(output_path: str, data_dir: str = "data"):
     try:
         download_and_extract_zip(NORTHWIND_URL, northwind_path)
     except Exception as e:
-        logger.error(f"Failed to get Northwind dataset: {e}")
+        logger.warning(f"Failed to automatically download Northwind dataset: {e}")
+        logger.warning(f"Please manually download a Northwind CSV dataset (e.g., from GitHub) and extract its contents into the '{northwind_path}' directory.")
     
     # Kaggle downloads require authentication, so we'll need to instruct the user.
     logger.info("To download Kaggle datasets, please ensure your kaggle.json is in ~/.kaggle/")
