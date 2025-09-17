@@ -18,8 +18,8 @@ FINANCIAL_TRANSACTIONS_URL = "https://www.kaggle.com/datasets/garfield18/credit-
 
 def download_and_extract_zip(url: str, dest_path: str):
     """Downloads and extracts a zip file from a URL."""
-    if os.path.exists(dest_path):
-        logger.info(f"Dataset already exists at {dest_path}. Skipping download.")
+    if os.path.exists(dest_path) and os.listdir(dest_path):
+        logger.info(f"Dataset already exists and is not empty at {dest_path}. Skipping download.")
         return
     
     logger.info(f"Downloading dataset from {url}...")
@@ -93,25 +93,28 @@ def process_hr_dataset(data_path: str) -> List[Tuple[str, str, Any]]:
 
 
 def process_financial_dataset(data_path: str) -> List[Tuple[str, str, Any]]:
-    """Processes the Financial Transactions dataset into triples."""
-    # This will also need adaptation based on the actual filename.
-    # Assuming 'credit_card_transactions.csv'.
-    file_path = os.path.join(data_path, "credit_card_transactions.csv")
+    """Processes the Financial Transactions dataset into triples using chunking."""
+    file_path = os.path.join(data_path, "PS_20174392719_1491204439457_log.csv")
     if not os.path.exists(file_path):
         logger.warning(f"Financial dataset file not found at {file_path}. Please check the filename.")
         return []
-        
+
     triples = []
+    chunk_size = 100000  # Process 100,000 rows at a time
     try:
-        df = pd.read_csv(file_path)
-        for col in df.columns:
-            for value in df[col].dropna():
-                field_name = col.lower()
-                value_type = str(df[col].dtype)
-                triples.append((field_name, value_type, value))
+        logger.info(f"Processing {file_path} in chunks of {chunk_size} rows...")
+        with pd.read_csv(file_path, chunksize=chunk_size) as reader:
+            for i, chunk in enumerate(reader):
+                logger.info(f"  - Processing chunk {i+1}...")
+                for col in chunk.columns:
+                    for value in chunk[col].dropna():
+                        field_name = col.lower()
+                        value_type = str(chunk[col].dtype)
+                        triples.append((field_name, value_type, value))
+        logger.info("Finished processing all chunks.")
     except Exception as e:
         logger.error(f"Failed to process financial dataset: {e}")
-        
+
     return triples
 
 

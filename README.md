@@ -42,11 +42,6 @@ AutoMockAI operates through a sequence of specialized agents:
 
 This project is organized into the following directories and key files:
 
--   `.git/`: Git version control system files.
--   `.pytest_cache/`: Cache directory used by `pytest` for faster test execution.
--   `.venv/`: Python virtual environment, containing installed dependencies and project executables.
--   `.windsurf/`: (Purpose unknown without further context. Potentially related to a specific development environment or tool.)
--   `commands.txt`: (Purpose unknown without further context. Potentially a script or list of commands.)
 -   `docker-compose.ollama.yml`: Docker Compose configuration for running Ollama, likely for the LLM fallback.
 -   `LICENSE`: The project's license (MIT License).
 -   `Project description AutoMockAI.pdf`: The detailed project description document.

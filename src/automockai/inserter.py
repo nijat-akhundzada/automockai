@@ -37,7 +37,7 @@ class DataInserter:
         finally:
             conn.close()
     
-    def build_insert_sql(self, table_name: str, rows: List[Dict[str, Any]]) -> Tuple[str, List[Tuple]]:
+    def build_insert_sql(self, table_name: str, rows: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
         """Build parameterized INSERT SQL for batch insertion."""
         if not rows:
             return "", []
@@ -49,17 +49,11 @@ class DataInserter:
         
         # Build the INSERT statement
         columns_sql = ", ".join(f'"{col}"' for col in columns)
-        placeholders = ", ".join("?" if self.schema_info["database_type"] == "sqlite" else "%s" for _ in columns)
+        placeholders = ", ".join(f":{col}" for col in columns)
         
         sql = f'INSERT INTO "{table_name}" ({columns_sql}) VALUES ({placeholders})'
         
-        # Build parameter tuples
-        params = []
-        for row in rows:
-            param_tuple = tuple(row.get(col) for col in columns)
-            params.append(param_tuple)
-        
-        return sql, params
+        return sql, rows
     
     def insert_batch(self, conn, table_name: str, rows: List[Dict[str, Any]]) -> int:
         """Insert a batch of rows into a table."""
@@ -71,12 +65,7 @@ class DataInserter:
             return 0
         
         try:
-            if len(params) == 1:
-                # Single row insert
-                result = conn.execute(text(sql), params[0])
-            else:
-                # Batch insert
-                result = conn.executemany(text(sql), params)
+            result = conn.execute(text(sql), params)
             
             inserted_count = result.rowcount if hasattr(result, 'rowcount') else len(params)
             logger.info(f"Inserted {inserted_count} rows into {table_name}")

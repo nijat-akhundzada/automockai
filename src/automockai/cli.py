@@ -13,10 +13,6 @@ from automockai.schema import SchemaAnalyzer, make_engine
 from automockai.generator import DataGenerator
 from automockai.inserter import DataInserter
 from automockai.model.evaluate import DataValidator
-from automockai.schema import SchemaAnalyzer, make_engine
-from automockai.generator import DataGenerator
-from automockai.inserter import DataInserter
-from automockai.model.evaluate import DataValidator
 from automockai.model.preprocessing import create_training_data
 from automockai.model.train import train_model
 
@@ -66,6 +62,7 @@ def generate(
     skip_django: bool = typer.Option(True, help="Exclude default Django tables"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Generate data but do not insert into the database"),
     use_local_model: bool = typer.Option(True, help="Use the local fine-tuned model for generation."),
+    use_ollama_fallback: bool = typer.Option(True, help="Use Ollama as a fallback for generation."),
     fallback_only: bool = typer.Option(False, "--fallback-only", help="Use only the fallback generator (Faker), skipping AI"),
     validate: bool = typer.Option(False, "--validate", help="Run validation checks on the generated data after insertion"),
     seed: Optional[int] = typer.Option(None, help="Seed for deterministic data generation in fallback mode"),
@@ -89,8 +86,8 @@ def generate(
 
     # --- 2. Table Filtering ---
     all_tables = list(schema_info["tables"].keys())
-    include_patterns = [p.strip() for p in include.split(',')]
-    exclude_patterns = [p.strip() for p in exclude.split(',')]
+    include_patterns = _split_csv_patterns(include)
+    exclude_patterns = _split_csv_patterns(exclude)
     
     selected_tables = _filter_tables(all_tables, include_patterns, exclude_patterns, skip_django)
     
@@ -105,6 +102,7 @@ def generate(
     data_generator = DataGenerator(engine, schema_info)
     if not use_local_model:
         data_generator.text_generator = None # Disable local model if not requested
+    data_generator.use_ollama_fallback = use_ollama_fallback
 
     generated_data = {}
     
@@ -177,6 +175,7 @@ def generate(
             logger.error(f"❌ Validation failed: {e}")
     
     logger.info("🎉 AutoMockAI process finished successfully!")
+
 
 @app.command()
 def preprocess(output_path: str = typer.Option("training_data.csv", help="Path to save the processed training data.")):
