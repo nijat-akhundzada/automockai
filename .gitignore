@@ -12,4 +12,5 @@ wheels/
 # AutoMockAI generated files
 model/trained_model/
 training_data.csv
+data/
 *.db
