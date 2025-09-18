@@ -99,10 +99,21 @@ def generate(
     
     # --- 3. Data Generator ---
     logger.info("Generating mock data...")
-    data_generator = DataGenerator(engine, schema_info)
-    if not use_local_model:
-        data_generator.text_generator = None # Disable local model if not requested
-    data_generator.use_ollama_fallback = use_ollama_fallback
+    
+    # If fallback_only is true, force disable AI models
+    if fallback_only:
+        use_local_model_for_generator = False
+        use_ollama_fallback_for_generator = False
+    else:
+        use_local_model_for_generator = use_local_model
+        use_ollama_fallback_for_generator = use_ollama_fallback
+
+    data_generator = DataGenerator(
+        engine,
+        schema_info,
+        use_local_model=use_local_model_for_generator,
+        use_ollama_fallback=use_ollama_fallback_for_generator
+    )
 
     generated_data = {}
     

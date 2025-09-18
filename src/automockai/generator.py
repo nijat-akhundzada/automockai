@@ -42,20 +42,22 @@ class DataGenerator:
     - Must enforce constraints (uniqueness, business rules)
     """
     
-    def __init__(self, engine: Engine, schema_info: Dict[str, Any]):
+    def __init__(self, engine: Engine, schema_info: Dict[str, Any],
+                 use_local_model: bool = True, use_ollama_fallback: bool = True):
         self.engine = engine
         self.schema_info = schema_info
         self.existing_data_cache = {}
         self.generated_values_cache = {}
         self.fallback_generator = FallbackGenerator() if FallbackGenerator else None
-        self.use_ollama_fallback = True
+        self.use_ollama_fallback = use_ollama_fallback # Use the passed argument
         
         # AI model placeholders
         self.local_model = None
         self.local_tokenizer = None
         self.text_generator = None
         
-        self._load_local_model()
+        if use_local_model: # Only load local model if explicitly requested
+            self._load_local_model()
 
     def _load_local_model(self):
         """Load the fine-tuned model from the local directory if it exists."""
